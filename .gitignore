@@ -1,0 +1,39 @@
+# --- Private: never commit ---
+# Browser login/session data (cookies, tokens). The app stores this under
+# %LOCALAPPDATA% by default, but ignore these names in case it lands locally.
+profiles/
+profile/
+EBWebView/
+*.WebView2/
+GraphicsCache/
+
+# Local logs & diagnostics may contain session/frame details from signed-in sites.
+*.log
+attach_debug.log
+crash.log
+
+# Local secrets/config that should never be public.
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+*.snk
+*.publishsettings
+
+# --- Build artifacts ---
+*.exe
+*.pdb
+lib/
+
+# --- IDE / editor ---
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
