@@ -1,4 +1,4 @@
-# LLM Choir (WebView2)
+# LLM Choir
 
 ![C#](https://img.shields.io/badge/C%23-WinForms-239120?style=flat-square&logo=csharp&logoColor=white)
 ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.x-512BD4?style=flat-square&logo=dotnet&logoColor=white)
