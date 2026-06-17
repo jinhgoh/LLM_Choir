@@ -26,7 +26,9 @@ namespace MultiLLM
         public string[] SendSelectors;
         public string[] FileInputSelectors;
         public WebView2 Web;
-        public CheckBox Enabled;
+        public CheckBox Enabled;   // include this LLM when sending the prompt
+        public CheckBox Show;      // show/hide this LLM's panel (independent of Enabled)
+        public Panel Panel;        // the whole panel (header + browser) for this LLM
         public Label Status;
     }
 
@@ -38,6 +40,8 @@ namespace MultiLLM
         readonly List<Site> sites = new List<Site>();
         TextBox prompt;
         FlowLayoutPanel toggles;
+        FlowLayoutPanel showToggles;
+        TableLayoutPanel center;
         bool initialized;
 
         // Set by MainForm; called with the first sent message so the tab is renamed.
@@ -95,19 +99,32 @@ namespace MultiLLM
             return b;
         }
 
+        Label MakeToggleLabel(string text)
+        {
+            return new Label
+            {
+                Text = text,
+                ForeColor = Color.FromArgb(154, 156, 161),
+                AutoSize = true,
+                Margin = new Padding(0, 4, 6, 0),
+                Font = new Font("Segoe UI", 8.5f)
+            };
+        }
+
         void BuildUi()
         {
-            TableLayoutPanel top = new TableLayoutPanel
+            // Prompt bar — docked to the BOTTOM of the workspace (the tab bar stays on top).
+            TableLayoutPanel promptBar = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
-                Height = 100,
+                Dock = DockStyle.Bottom,
+                Height = 134,
                 ColumnCount = 2,
                 RowCount = 1,
                 BackColor = Color.FromArgb(43, 45, 49),
                 Padding = new Padding(8)
             };
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            promptBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            promptBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             prompt = new TextBox
             {
@@ -127,7 +144,7 @@ namespace MultiLLM
                     SendToAll(true);
                 }
             };
-            top.Controls.Add(prompt, 0, 0);
+            promptBar.Controls.Add(prompt, 0, 0);
 
             FlowLayoutPanel btns = new FlowLayoutPanel
             {
@@ -163,6 +180,7 @@ namespace MultiLLM
             actionRow.Controls.Add(attachBtn);
             actionRow.Controls.Add(newBtn);
 
+            // "Send:" row — which LLMs receive the prompt.
             toggles = new FlowLayoutPanel
             {
                 FlowDirection = FlowDirection.LeftToRight,
@@ -170,12 +188,24 @@ namespace MultiLLM
                 WrapContents = false,
                 Margin = new Padding(0, 6, 0, 0)
             };
+            toggles.Controls.Add(MakeToggleLabel("Send:"));
+
+            // "Show:" row — which LLM panels are visible (independent of Send).
+            showToggles = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                AutoSize = true,
+                WrapContents = false,
+                Margin = new Padding(0, 2, 0, 0)
+            };
+            showToggles.Controls.Add(MakeToggleLabel("Show:"));
 
             btns.Controls.Add(actionRow);
             btns.Controls.Add(toggles);
-            top.Controls.Add(btns, 1, 0);
+            btns.Controls.Add(showToggles);
+            promptBar.Controls.Add(btns, 1, 0);
 
-            TableLayoutPanel center = new TableLayoutPanel
+            center = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 3,
@@ -239,6 +269,18 @@ namespace MultiLLM
                 };
                 toggles.Controls.Add(site.Enabled);
 
+                site.Show = new CheckBox
+                {
+                    Text = site.Name,
+                    Checked = true,
+                    ForeColor = Color.Gainsboro,
+                    AutoSize = true,
+                    Margin = new Padding(0, 3, 10, 0)
+                };
+                site.Show.CheckedChanged += delegate { ApplyVisibility(); };
+                showToggles.Controls.Add(site.Show);
+
+                site.Panel = panel;
                 panel.Controls.Add(site.Web);
                 panel.Controls.Add(header);
                 center.Controls.Add(panel, col, 0);
@@ -246,7 +288,22 @@ namespace MultiLLM
             }
 
             Controls.Add(center);
-            Controls.Add(top);
+            Controls.Add(promptBar);
+        }
+
+        // Show or hide each LLM's panel (independent of whether it receives the prompt).
+        // Hidden panels collapse their column so the visible ones share the full width.
+        void ApplyVisibility()
+        {
+            int visible = 0;
+            foreach (Site s in sites) if (s.Show.Checked) visible++;
+            int shown = Math.Max(visible, 1);
+            for (int i = 0; i < sites.Count; i++)
+            {
+                bool on = sites[i].Show.Checked;
+                if (sites[i].Panel != null) sites[i].Panel.Visible = on;
+                center.ColumnStyles[i].Width = on ? 100f / shown : 0f;
+            }
         }
 
         // Initialize the three panels against the shared environment. Safe to call
@@ -964,7 +1021,7 @@ namespace MultiLLM
 Ask ChatGPT, Claude, and Gemini at the same time.
 
 SENDING
-• Type in the top box and press Enter to send your prompt to all three panels.
+• Type in the box at the bottom and press Enter to send to all three panels.
 • Shift+Enter inserts a line break instead of sending.
 • ""Send to all"" does the same thing as pressing Enter.
 • ""Fill only"" stages your text in each panel without sending it.
@@ -975,7 +1032,9 @@ ATTACHING FILES
 
 PANELS
 • Each panel is a real, logged-in browser for that service.
-• Use the per-service checkboxes to include or exclude a panel before sending.
+• ""Send:"" checkboxes choose which LLMs receive the prompt.
+• ""Show:"" checkboxes show/hide each LLM's panel (independent of Send) — visible
+  panels expand to fill the space, so you can focus on one or two at a time.
 • ↻ reloads a single panel.
 • ""New chat (all)"" starts a fresh conversation in every panel.
 

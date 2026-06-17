@@ -24,6 +24,17 @@ crash.log
 *.snk
 *.publishsettings
 
+# AI-assistant local files (instructions, sessions, settings) — keep out of the public repo.
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+AGENTS.md
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.github/copilot-instructions.md
+
 # --- Build artifacts ---
 *.exe
 *.pdb

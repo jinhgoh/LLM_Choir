@@ -51,11 +51,16 @@ rebuild after editing the code, run `build.bat`.)
    - This is the same as being logged into several sites in one normal browser —
      the browser still isolates each site's own cookies by domain; only the
      shared Google session is reused.
-2. Type a prompt in the top box and press **Enter** to send it to all three
-   (use **Shift+Enter** for a line break), or click **Send to all**.
-3. Controls: per-service checkboxes to include/exclude, **Fill only** (stage
-   text without sending), **Attach to all** (pick file(s) once and upload them
-   to every enabled panel at once), **New chat (all)**, and per-panel reload (↻).
+2. Type a prompt in the box at the **bottom** of the window and press **Enter**
+   to send it to all three (use **Shift+Enter** for a line break), or click
+   **Send to all**.
+3. Controls (in the bottom bar): two rows of per-service checkboxes —
+   **Send:** chooses which LLMs receive the prompt, and **Show:** shows/hides
+   each LLM's panel (independent of Send, so you can keep sending to an LLM while
+   hiding its window; visible panels expand to fill the freed space). Plus
+   **Fill only** (stage text without sending), **Attach to all** (pick file(s)
+   once and upload them to every enabled panel at once), **New chat (all)**, and
+   per-panel reload (↻).
    - **Attach to all** opens one file picker and drops the chosen file(s) onto
      each site's own uploader, so the attachment appears in all three composers.
      Then type your prompt and **Send to all** as usual. No native dialog pops
