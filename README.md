@@ -5,6 +5,9 @@
 ![WebView2](https://img.shields.io/badge/WebView2-1.0.4022.49-0078D7?style=flat-square&logo=microsoftedge&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white)
 
+<img width="1662" height="992" alt="image" src="https://github.com/user-attachments/assets/c30b2622-db26-4e5a-b2b6-455052c2ee36" />
+
+
 A single-window "browser-in-a-browser". It shows **ChatGPT, Claude, and
 Gemini** side by side, each as a *real* embedded browser (full login, uploads,
 voice — every site feature works and sessions persist), with **one shared
