@@ -15,6 +15,37 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace MultiLLM
 {
+    // Per-machine DPI scaling. The app is declared System-DPI-aware (app.manifest),
+    // so Windows renders it at native pixels instead of bitmap-stretching it. Fonts
+    // are specified in points and therefore already grow with the display's scaling,
+    // but every hand-set pixel size (bar heights, chip widths, control offsets) does
+    // not — so at >100% display scaling the now-larger text overflowed the fixed-
+    // height top tab bar and bottom prompt bar and got clipped. Multiplying every
+    // literal pixel value by this factor keeps the boxes proportional to the text on
+    // any machine. Computed once at startup from the system DPI (which, for a
+    // System-DPI-aware process, is fixed for the process lifetime).
+    static class Dpi
+    {
+        public static float Scale = 1f;
+
+        public static void Init()
+        {
+            try
+            {
+                using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+                    Scale = g.DpiX / 96f;
+            }
+            catch { Scale = 1f; }
+            if (Scale < 1f) Scale = 1f; // never shrink below the original design sizes
+        }
+
+        public static int S(int px) { return (int)Math.Round(px * Scale); }
+        public static float S(float px) { return px * Scale; }
+        public static Padding S(Padding p) { return new Padding(S(p.Left), S(p.Top), S(p.Right), S(p.Bottom)); }
+        public static Size S(Size sz) { return new Size(S(sz.Width), S(sz.Height)); }
+        public static Point S(Point pt) { return new Point(S(pt.X), S(pt.Y)); }
+    }
+
     // One LLM service shown in its own embedded browser panel.
     class Site
     {
@@ -42,6 +73,9 @@ namespace MultiLLM
         FlowLayoutPanel toggles;
         FlowLayoutPanel showToggles;
         TableLayoutPanel center;
+        TableLayoutPanel promptBar;
+        FlowLayoutPanel btns;
+        Splitter promptSplitter;
         bool initialized;
 
         // Set by MainForm; called with the first sent message so the tab is renamed.
@@ -57,6 +91,14 @@ namespace MultiLLM
             Dock = DockStyle.Fill;
             BackColor = Color.FromArgb(30, 31, 34);
 
+            // Panels are laid out left-to-right in this order: Gemini, ChatGPT, Claude.
+            sites.Add(new Site
+            {
+                Id = "gemini", Name = "Gemini", Url = "https://gemini.google.com/app", Color = ColorTranslator.FromHtml("#4285F4"),
+                InputSelectors = new[] { "rich-textarea div[contenteditable='true']", "div.ql-editor[contenteditable='true']", "div[contenteditable='true']", "textarea" },
+                SendSelectors = new[] { "button[aria-label*='Send message']", "button[aria-label*='Send']" },
+                FileInputSelectors = new[] { "input[type='file'][multiple]", "input[type='file']" }
+            });
             sites.Add(new Site
             {
                 Id = "chatgpt", Name = "ChatGPT", Url = "https://chatgpt.com/", Color = ColorTranslator.FromHtml("#10A37F"),
@@ -71,13 +113,6 @@ namespace MultiLLM
                 SendSelectors = new[] { "button[aria-label*='Send']", "button[data-testid='send-button']" },
                 FileInputSelectors = new[] { "input[data-testid='file-upload']", "input[type='file'][multiple]", "input[type='file']" }
             });
-            sites.Add(new Site
-            {
-                Id = "gemini", Name = "Gemini", Url = "https://gemini.google.com/app", Color = ColorTranslator.FromHtml("#4285F4"),
-                InputSelectors = new[] { "rich-textarea div[contenteditable='true']", "div.ql-editor[contenteditable='true']", "div[contenteditable='true']", "textarea" },
-                SendSelectors = new[] { "button[aria-label*='Send message']", "button[aria-label*='Send']" },
-                FileInputSelectors = new[] { "input[type='file'][multiple]", "input[type='file']" }
-            });
 
             BuildUi();
         }
@@ -91,8 +126,8 @@ namespace MultiLLM
                 FlatStyle = FlatStyle.Flat,
                 BackColor = back,
                 ForeColor = Color.White,
-                Margin = new Padding(2),
-                Padding = new Padding(8, 4, 8, 4),
+                Margin = Dpi.S(new Padding(2)),
+                Padding = Dpi.S(new Padding(8, 4, 8, 4)),
                 Font = new Font("Segoe UI", 9.5f)
             };
             b.FlatAppearance.BorderSize = 0;
@@ -106,7 +141,7 @@ namespace MultiLLM
                 Text = text,
                 ForeColor = Color.FromArgb(154, 156, 161),
                 AutoSize = true,
-                Margin = new Padding(0, 4, 6, 0),
+                Margin = Dpi.S(new Padding(0, 4, 6, 0)),
                 Font = new Font("Segoe UI", 8.5f)
             };
         }
@@ -114,14 +149,14 @@ namespace MultiLLM
         void BuildUi()
         {
             // Prompt bar — docked to the BOTTOM of the workspace (the tab bar stays on top).
-            TableLayoutPanel promptBar = new TableLayoutPanel
+            promptBar = new TableLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 134,
+                Height = Dpi.S(40), // compact start; grown to hug its content below
                 ColumnCount = 2,
                 RowCount = 1,
                 BackColor = Color.FromArgb(43, 45, 49),
-                Padding = new Padding(8)
+                Padding = Dpi.S(new Padding(8))
             };
             promptBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             promptBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -146,7 +181,7 @@ namespace MultiLLM
             };
             promptBar.Controls.Add(prompt, 0, 0);
 
-            FlowLayoutPanel btns = new FlowLayoutPanel
+            btns = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
@@ -186,7 +221,7 @@ namespace MultiLLM
                 FlowDirection = FlowDirection.LeftToRight,
                 AutoSize = true,
                 WrapContents = false,
-                Margin = new Padding(0, 6, 0, 0)
+                Margin = Dpi.S(new Padding(0, 6, 0, 0))
             };
             toggles.Controls.Add(MakeToggleLabel("Send:"));
 
@@ -196,7 +231,7 @@ namespace MultiLLM
                 FlowDirection = FlowDirection.LeftToRight,
                 AutoSize = true,
                 WrapContents = false,
-                Margin = new Padding(0, 2, 0, 0)
+                Margin = Dpi.S(new Padding(0, 2, 0, 0))
             };
             showToggles.Controls.Add(MakeToggleLabel("Show:"));
 
@@ -222,14 +257,14 @@ namespace MultiLLM
 
                 Panel panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 31, 34) };
 
-                Panel header = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color.FromArgb(43, 45, 49) };
+                Panel header = new Panel { Dock = DockStyle.Top, Height = Dpi.S(30), BackColor = Color.FromArgb(43, 45, 49) };
                 Label name = new Label
                 {
                     Text = site.Name,
                     ForeColor = site.Color,
                     Font = new Font("Segoe UI", 10f, FontStyle.Bold),
                     AutoSize = true,
-                    Location = new Point(10, 7)
+                    Location = Dpi.S(new Point(10, 7))
                 };
                 site.Status = new Label
                 {
@@ -237,12 +272,12 @@ namespace MultiLLM
                     ForeColor = Color.FromArgb(154, 156, 161),
                     Font = new Font("Segoe UI", 8f),
                     AutoSize = true,
-                    Location = new Point(95, 9)
+                    Location = Dpi.S(new Point(95, 9))
                 };
                 Button reload = new Button
                 {
                     Text = "↻",
-                    Width = 34,
+                    Width = Dpi.S(34),
                     Dock = DockStyle.Right,
                     FlatStyle = FlatStyle.Flat,
                     ForeColor = Color.White
@@ -265,7 +300,7 @@ namespace MultiLLM
                     Checked = true,
                     ForeColor = Color.Gainsboro,
                     AutoSize = true,
-                    Margin = new Padding(0, 3, 10, 0)
+                    Margin = Dpi.S(new Padding(0, 3, 10, 0))
                 };
                 toggles.Controls.Add(site.Enabled);
 
@@ -275,9 +310,15 @@ namespace MultiLLM
                     Checked = true,
                     ForeColor = Color.Gainsboro,
                     AutoSize = true,
-                    Margin = new Padding(0, 3, 10, 0)
+                    Margin = Dpi.S(new Padding(0, 3, 10, 0))
                 };
-                site.Show.CheckedChanged += delegate { ApplyVisibility(); };
+                // Hiding a panel also stops sending to it; re-showing it does NOT
+                // resume sending (the user must re-check "Send:" deliberately).
+                site.Show.CheckedChanged += delegate
+                {
+                    if (!captured.Show.Checked) captured.Enabled.Checked = false;
+                    ApplyVisibility();
+                };
                 showToggles.Controls.Add(site.Show);
 
                 site.Panel = panel;
@@ -287,8 +328,47 @@ namespace MultiLLM
                 col++;
             }
 
+            // A thin splitter sits on the prompt bar's top edge; the user drags it up or
+            // down (HSplit cursor) to make the typing area taller or shorter. A Bottom-
+            // docked splitter resizes the control directly below it — the prompt bar.
+            promptSplitter = new Splitter
+            {
+                Dock = DockStyle.Bottom,
+                Height = Dpi.S(5),
+                BackColor = Color.FromArgb(58, 60, 65),
+                MinExtra = Dpi.S(160) // always keep room for the panels above
+            };
+
+            // Docking order: center fills the top, the splitter sits just above the
+            // prompt bar, and the prompt bar hugs the bottom edge.
             Controls.Add(center);
+            Controls.Add(promptSplitter);
             Controls.Add(promptBar);
+
+            // Size the bar to its content (no empty gap below the checkboxes), and keep
+            // that as the floor so the bottom "Show:" row is never clipped — by first
+            // layout, by Windows' "make text bigger" setting, or by a too-short drag.
+            btns.SizeChanged += delegate { RecalcPromptBar(); };
+            HandleCreated += delegate { RecalcPromptBar(); };
+            RecalcPromptBar();
+        }
+
+        // The prompt bar's natural content height (the button row + the two checkbox
+        // rows). This is both the neat default height and the smallest the user can
+        // drag the bar down to.
+        int PromptContentHeight()
+        {
+            return btns.PreferredSize.Height + promptBar.Padding.Vertical;
+        }
+
+        // Hug the content by default and never let the bar clip its bottom row, while
+        // preserving any taller height the user has dragged the splitter to.
+        void RecalcPromptBar()
+        {
+            if (promptBar == null || btns == null) return;
+            int min = PromptContentHeight();
+            if (promptSplitter != null) promptSplitter.MinSize = min;
+            if (promptBar.Height < min) promptBar.Height = min;
         }
 
         // Show or hide each LLM's panel (independent of whether it receives the prompt).
@@ -719,8 +799,15 @@ namespace MultiLLM
         public MainForm()
         {
             Text = "LLM Choir";
-            Width = 1680;
-            Height = 1000;
+            // Manual DPI scaling (Dpi.S) is the single source of truth; turn off
+            // WinForms' own auto-scaling so the two never compound.
+            AutoScaleMode = AutoScaleMode.None;
+            // Scale the default window to the display, but never larger than the
+            // screen's working area (high-DPI machines have fewer logical pixels).
+            Size want = Dpi.S(new Size(1680, 1000));
+            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            Width = Math.Min(want.Width, wa.Width);
+            Height = Math.Min(want.Height, wa.Height);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(24, 25, 28);
 
@@ -729,7 +816,7 @@ namespace MultiLLM
             Panel topBar = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 34,
+                Height = Dpi.S(34),
                 BackColor = Color.FromArgb(24, 25, 28)
             };
 
@@ -739,18 +826,18 @@ namespace MultiLLM
                 BackColor = Color.FromArgb(24, 25, 28),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Padding = new Padding(6, 6, 0, 0)
+                Padding = Dpi.S(new Padding(6, 6, 0, 0))
             };
 
             addBtn = new Button
             {
                 Text = "+",
-                Width = 30,
-                Height = 24,
+                Width = Dpi.S(30),
+                Height = Dpi.S(24),
                 FlatStyle = FlatStyle.Flat,
                 ForeColor = Color.White,
                 BackColor = Color.FromArgb(45, 47, 52),
-                Margin = new Padding(4, 0, 0, 0),
+                Margin = Dpi.S(new Padding(4, 0, 0, 0)),
                 Font = new Font("Segoe UI", 11f, FontStyle.Bold)
             };
             addBtn.FlatAppearance.BorderSize = 0;
@@ -760,7 +847,7 @@ namespace MultiLLM
             helpBtn = new Button
             {
                 Text = "?",
-                Width = 34,
+                Width = Dpi.S(34),
                 Dock = DockStyle.Right,
                 FlatStyle = FlatStyle.Flat,
                 ForeColor = Color.White,
@@ -803,23 +890,23 @@ namespace MultiLLM
             TabItem ti = new TabItem();
             ti.View = view;
 
-            Panel chip = new Panel { Width = 156, Height = 26, BackColor = Color.FromArgb(45, 47, 52), Margin = new Padding(2, 0, 0, 0) };
+            Panel chip = new Panel { Width = Dpi.S(156), Height = Dpi.S(26), BackColor = Color.FromArgb(45, 47, 52), Margin = Dpi.S(new Padding(2, 0, 0, 0)) };
             Label title = new Label
             {
                 Text = "Compare " + counter,
                 ForeColor = Color.Gainsboro,
                 AutoSize = false,
                 AutoEllipsis = true, // trims long titles with "…" to fit
-                Width = 122,
-                Height = 26,
+                Width = Dpi.S(122),
+                Height = Dpi.S(26),
                 TextAlign = ContentAlignment.MiddleLeft,
-                Location = new Point(8, 0),
+                Location = Dpi.S(new Point(8, 0)),
                 Font = new Font("Segoe UI", 9f)
             };
             Button close = new Button
             {
                 Text = "×",
-                Width = 24,
+                Width = Dpi.S(24),
                 Dock = DockStyle.Right,
                 FlatStyle = FlatStyle.Flat,
                 ForeColor = Color.Gainsboro,
@@ -970,6 +1057,7 @@ namespace MultiLLM
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            Dpi.Init(); // read the display scaling once, before any window is built
             Application.Run(new MainForm());
             GC.KeepAlive(singleInstance);
         }
@@ -1055,15 +1143,16 @@ TROUBLESHOOTING
         public HelpForm()
         {
             Text = "LLM Choir — Guide";
-            Width = 660;
-            Height = 720;
+            AutoScaleMode = AutoScaleMode.None;
+            Width = Dpi.S(660);
+            Height = Dpi.S(720);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(30, 31, 34);
             ForeColor = Color.White;
             MinimizeBox = false;
             ShowIcon = false;
             ShowInTaskbar = false;
-            MinimumSize = new Size(440, 360);
+            MinimumSize = Dpi.S(new Size(440, 360));
 
             TableLayoutPanel root = new TableLayoutPanel
             {
@@ -1071,10 +1160,10 @@ TROUBLESHOOTING
                 ColumnCount = 1,
                 RowCount = 2,
                 BackColor = Color.FromArgb(30, 31, 34),
-                Padding = new Padding(16, 14, 16, 10)
+                Padding = Dpi.S(new Padding(16, 14, 16, 10))
             };
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44f));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, Dpi.S(44f)));
 
             RichTextBox box = new RichTextBox
             {
@@ -1098,13 +1187,13 @@ TROUBLESHOOTING
             Button close = new Button
             {
                 Text = "Close",
-                Width = 96,
-                Height = 30,
+                Width = Dpi.S(96),
+                Height = Dpi.S(30),
                 FlatStyle = FlatStyle.Flat,
                 ForeColor = Color.White,
                 BackColor = Color.FromArgb(88, 101, 242),
                 Font = new Font("Segoe UI", 9.5f),
-                Margin = new Padding(0, 6, 0, 0)
+                Margin = Dpi.S(new Padding(0, 6, 0, 0))
             };
             close.FlatAppearance.BorderSize = 0;
             close.Click += delegate { Close(); };
