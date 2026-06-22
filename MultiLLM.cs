@@ -63,13 +63,113 @@ namespace MultiLLM
         public Label Status;
     }
 
+    // The bottom prompt box. A plain TextBox can't display a pasted image, so we
+    // intercept the paste (WM_PASTE, which covers Ctrl+V, Shift+Insert and the
+    // right-click menu) and hand it to the host: if the host consumes it (because
+    // the clipboard held an image to broadcast to the panels), the default text
+    // paste is skipped; otherwise normal text paste proceeds untouched.
+    class PromptTextBox : TextBox
+    {
+        const int WM_PASTE = 0x0302;
+        const int WM_MOUSEWHEEL = 0x020A;
+        const int WHEEL_DELTA = 120;
+        const int EM_LINESCROLL = 0x00B6; // scroll a multiline edit by N lines (lParam)
+
+        [DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public Func<bool> OnPaste; // return true if the paste was handled as an image
+
+        // Middle-button click-and-pan ("autoscroll"), like a browser. The native
+        // edit control only scrolls by wheel/scrollbar, so we drive it ourselves:
+        // middle-click anchors an origin, then a timer scrolls by a number of lines
+        // proportional to how far the cursor has moved from that anchor.
+        System.Windows.Forms.Timer autoScrollTimer;
+        Point autoScrollOrigin;
+        bool autoScrolling;
+        int mouseWheelRemainder;
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_PASTE && OnPaste != null && OnPaste()) return;
+            if (m.Msg == WM_MOUSEWHEEL)
+            {
+                ScrollByMouseWheel(m.WParam);
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        void ScrollByMouseWheel(IntPtr wParam)
+        {
+            int delta = (short)((((long)wParam) >> 16) & 0xffff);
+            if (delta == 0) return;
+
+            mouseWheelRemainder += delta;
+            int notches = mouseWheelRemainder / WHEEL_DELTA;
+            mouseWheelRemainder %= WHEEL_DELTA;
+            if (notches == 0) return;
+
+            int linesPerNotch = SystemInformation.MouseWheelScrollLines;
+            if (linesPerNotch <= 0) linesPerNotch = Math.Max(1, ClientSize.Height / Math.Max(1, Font.Height));
+
+            SendMessage(Handle, EM_LINESCROLL, IntPtr.Zero, (IntPtr)(-notches * linesPerNotch));
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            // A second click of any button while panning ends the gesture.
+            if (autoScrolling) { StopAutoScroll(); return; }
+            if (e.Button == MouseButtons.Middle) { StartAutoScroll(e.Location); return; }
+            base.OnMouseDown(e);
+        }
+
+        void StartAutoScroll(Point origin)
+        {
+            autoScrolling = true;
+            autoScrollOrigin = origin;
+            Cursor = Cursors.NoMoveVert; // classic up/down anchor indicator
+            Capture = true;              // keep getting moves even off the control
+            if (autoScrollTimer == null)
+            {
+                autoScrollTimer = new System.Windows.Forms.Timer { Interval = 30 };
+                autoScrollTimer.Tick += delegate { AutoScrollStep(); };
+            }
+            autoScrollTimer.Start();
+        }
+
+        void StopAutoScroll()
+        {
+            autoScrolling = false;
+            if (autoScrollTimer != null) autoScrollTimer.Stop();
+            Capture = false;
+            Cursor = Cursors.IBeam; // the textbox's normal cursor
+        }
+
+        void AutoScrollStep()
+        {
+            if (!autoScrolling) return;
+            int dy = PointToClient(MousePosition).Y - autoScrollOrigin.Y;
+            if (Math.Abs(dy) < 10) return; // dead zone so a still cursor doesn't drift
+            int lines = dy / 24;           // farther from the anchor → faster scroll
+            if (lines == 0) lines = dy > 0 ? 1 : -1;
+            SendMessage(Handle, EM_LINESCROLL, IntPtr.Zero, (IntPtr)lines);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && autoScrollTimer != null) autoScrollTimer.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
     // One full comparison workspace: prompt box + ChatGPT/Claude/Gemini panels.
     // Each browser tab hosts its own ComparisonView; they share one profile
     // (one CoreWebView2Environment), so logins are shared across all tabs.
     class ComparisonView : Panel
     {
         readonly List<Site> sites = new List<Site>();
-        TextBox prompt;
+        PromptTextBox prompt;
         FlowLayoutPanel toggles;
         FlowLayoutPanel showToggles;
         TableLayoutPanel center;
@@ -161,14 +261,20 @@ namespace MultiLLM
             promptBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             promptBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            prompt = new TextBox
+            prompt = new PromptTextBox
             {
                 Multiline = true,
                 Dock = DockStyle.Fill,
                 Font = new Font("Segoe UI", 11f),
                 BackColor = Color.FromArgb(27, 28, 31),
                 ForeColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle
+                BorderStyle = BorderStyle.FixedSingle,
+                // A vertical scrollbar lets long prompts scroll — via the bar and
+                // the mouse wheel (a multiline TextBox with ScrollBars.None ignores
+                // the wheel entirely). WordWrap stays on, so no horizontal bar is
+                // needed. Middle-button click-and-pan is added in PromptTextBox.
+                ScrollBars = ScrollBars.Vertical,
+                WordWrap = true
             };
             prompt.KeyDown += delegate (object s, KeyEventArgs e)
             {
@@ -179,6 +285,8 @@ namespace MultiLLM
                     SendToAll(true);
                 }
             };
+            // Pasting an image broadcasts it to every panel (same path as "Attach to all").
+            prompt.OnPaste = HandlePromptPaste;
             promptBar.Controls.Add(prompt, 0, 0);
 
             btns = new FlowLayoutPanel
@@ -302,6 +410,12 @@ namespace MultiLLM
                     AutoSize = true,
                     Margin = Dpi.S(new Padding(0, 3, 10, 0))
                 };
+                // Checking "Send:" also shows the panel; unchecking "Send:" leaves
+                // "Show:" alone (the user may still want to look at that panel).
+                site.Enabled.CheckedChanged += delegate
+                {
+                    if (captured.Enabled.Checked) captured.Show.Checked = true;
+                };
                 toggles.Controls.Add(site.Enabled);
 
                 site.Show = new CheckBox
@@ -386,18 +500,59 @@ namespace MultiLLM
             }
         }
 
+        public bool HasSavedTitle
+        {
+            get { return firstSendDone; }
+            set { firstSendDone = value; }
+        }
+
+        public string[] CurrentUrls()
+        {
+            List<string> urls = new List<string>();
+            foreach (Site s in sites)
+            {
+                string url = s.Url;
+                try
+                {
+                    if (s.Web != null && s.Web.CoreWebView2 != null && !string.IsNullOrEmpty(s.Web.CoreWebView2.Source))
+                        url = s.Web.CoreWebView2.Source;
+                    else if (s.Web != null && s.Web.Source != null)
+                        url = s.Web.Source.AbsoluteUri;
+                }
+                catch { }
+                urls.Add(url);
+            }
+            return urls.ToArray();
+        }
+
         // Initialize the three panels against the shared environment. Safe to call
-        // once; navigates each panel to its service.
+        // once; navigates each panel to its saved URL, or to the service home page.
         public async Task InitAsync(CoreWebView2Environment env)
+        {
+            await InitAsync(env, null);
+        }
+
+        public async Task InitAsync(CoreWebView2Environment env, string[] startUrls)
         {
             if (initialized) return;
             initialized = true;
-            foreach (Site s in sites)
+            for (int i = 0; i < sites.Count; i++)
             {
+                Site s = sites[i];
                 try
                 {
                     if (!s.Web.IsHandleCreated) s.Web.CreateControl();
                     await s.Web.EnsureCoreWebView2Async(env);
+
+                    // Links/citations that open via target="_blank" or window.open would
+                    // otherwise spawn a bare WebView2 popup; send them to the user's
+                    // actual default browser instead.
+                    s.Web.CoreWebView2.NewWindowRequested += delegate (object sender, CoreWebView2NewWindowRequestedEventArgs e)
+                    {
+                        e.Handled = true;
+                        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri) { UseShellExecute = true }); }
+                        catch { }
+                    };
 
                     // Bridge Ctrl+T from inside the page (where WebView2 owns the
                     // keyboard) back to the host so it can open a new tab.
@@ -417,10 +572,25 @@ namespace MultiLLM
                         "else if(e.key==='w'||e.key==='W'){e.preventDefault();try{window.chrome.webview.postMessage('close-tab');}catch(_){}}" +
                         "}}, true);");
 
-                    s.Web.Source = new Uri(s.Url);
+                    s.Web.Source = StartUri(startUrls, i, s.Url);
                 }
                 catch (Exception ex) { s.Status.Text = "init error: " + ex.Message; }
             }
+        }
+
+        static Uri StartUri(string[] startUrls, int index, string fallback)
+        {
+            string value = null;
+            if (startUrls != null && index >= 0 && index < startUrls.Length)
+                value = startUrls[index];
+
+            Uri uri;
+            if (!string.IsNullOrEmpty(value) &&
+                Uri.TryCreate(value, UriKind.Absolute, out uri) &&
+                (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
+                return uri;
+
+            return new Uri(fallback);
         }
 
         public void FocusPrompt()
@@ -490,6 +660,67 @@ namespace MultiLLM
                 site.Status.Text = "attaching…";
                 site.Status.Text = await AttachFilesTo(site, paths);
             }
+        }
+
+        // Called from the prompt box's WM_PASTE. If the clipboard holds a bitmap
+        // (e.g. a screenshot, or "Copy image" from a page), save it to a temp PNG
+        // and broadcast it to every enabled panel — then suppress the default text
+        // paste by returning true. A normal text copy can also carry a thumbnail
+        // bitmap, so when there's text we leave the paste alone and let it insert.
+        bool HandlePromptPaste()
+        {
+            try
+            {
+                if (!Clipboard.ContainsImage() || Clipboard.ContainsText()) return false;
+                Image img = Clipboard.GetImage();
+                if (img == null) return false;
+                string path;
+                using (img) path = SaveClipboardImage(img);
+                if (path == null) return false;
+                PasteImageToAll(new[] { path });
+                return true;
+            }
+            catch { return false; }
+        }
+
+        // Attach a pasted image to every enabled panel, reusing the same file-input
+        // machinery as "Attach to all" (direct injection for ChatGPT/Claude, the
+        // intercepted file chooser for Gemini).
+        async void PasteImageToAll(string[] paths)
+        {
+            foreach (Site site in sites)
+            {
+                if (!site.Enabled.Checked) continue;
+                if (site.Web.CoreWebView2 == null) { site.Status.Text = "still loading…"; continue; }
+                site.Status.Text = "pasting image…";
+                site.Status.Text = await AttachFilesTo(site, paths);
+            }
+        }
+
+        // Save a clipboard bitmap to a temp PNG (lossless, accepted by every site's
+        // uploader) and return its path. Old paste files are tidied so the folder
+        // doesn't grow without bound.
+        static string SaveClipboardImage(Image img)
+        {
+            try
+            {
+                string dir = Path.Combine(Path.GetTempPath(), "MultiLLMConsole", "paste");
+                Directory.CreateDirectory(dir);
+                try
+                {
+                    foreach (string old in Directory.GetFiles(dir, "*.png"))
+                        if ((DateTime.Now - File.GetLastWriteTime(old)).TotalHours > 1)
+                            File.Delete(old);
+                }
+                catch { }
+                string path = Path.Combine(dir, "paste_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".png");
+                // Copy into a fresh bitmap so the save isn't tied to the clipboard's
+                // backing stream, then write PNG.
+                using (Bitmap bmp = new Bitmap(img))
+                    bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                return path;
+            }
+            catch { return null; }
         }
 
         // Attach files to one site. Preferred path: drop them straight onto the
@@ -788,12 +1019,27 @@ namespace MultiLLM
         Button helpBtn;
         readonly List<TabItem> tabs = new List<TabItem>();
         int counter = 0;
+        bool restoringSession;
+        const string SessionHeader = "LLMChoirSession1";
 
         class TabItem
         {
             public Panel Chip;
             public Label Title;
             public ComparisonView View;
+        }
+
+        class SavedTab
+        {
+            public string Title;
+            public bool HasSavedTitle;
+            public string[] Urls;
+        }
+
+        class SavedSession
+        {
+            public int ActiveIndex;
+            public readonly List<SavedTab> Tabs = new List<SavedTab>();
         }
 
         public MainForm()
@@ -870,30 +1116,71 @@ namespace MultiLLM
                 try
                 {
                     env = await CoreWebView2Environment.CreateAsync(null, SharedProfile(), null);
-                    AddTab();
+                    await RestoreTabsAsync();
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show("WebView2 init failed: " + ex.Message, "LLM Choir");
                 }
             };
+            FormClosing += delegate { SaveSession(); };
+        }
+
+        async Task RestoreTabsAsync()
+        {
+            SavedSession session = LoadSession();
+            if (session == null || session.Tabs.Count == 0)
+            {
+                await AddTabAsync(null, true);
+                return;
+            }
+
+            int active = session.ActiveIndex;
+            if (active < 0 || active >= session.Tabs.Count) active = 0;
+
+            restoringSession = true;
+            try
+            {
+                for (int i = 0; i < session.Tabs.Count; i++)
+                    await AddTabAsync(session.Tabs[i], i == active);
+            }
+            finally
+            {
+                restoringSession = false;
+            }
+
+            if (tabs.Count > 0)
+            {
+                if (active >= tabs.Count) active = tabs.Count - 1;
+                Activate(tabs[active]);
+                tabs[active].View.FocusPrompt();
+            }
+            SaveSession();
         }
 
         async void AddTab()
         {
-            if (env == null) return;
+            try { await AddTabAsync(null, true); }
+            catch (Exception ex) { MessageBox.Show("Could not open a new tab: " + ex.Message, "LLM Choir"); }
+        }
+
+        async Task<TabItem> AddTabAsync(SavedTab saved, bool activate)
+        {
+            if (env == null) return null;
             counter++;
 
             ComparisonView view = new ComparisonView { Visible = false };
             content.Controls.Add(view);
+            if (saved != null) view.HasSavedTitle = saved.HasSavedTitle;
 
             TabItem ti = new TabItem();
             ti.View = view;
+            string titleText = saved != null && !string.IsNullOrEmpty(saved.Title) ? saved.Title : "Compare " + counter;
 
             Panel chip = new Panel { Width = Dpi.S(156), Height = Dpi.S(26), BackColor = Color.FromArgb(45, 47, 52), Margin = Dpi.S(new Padding(2, 0, 0, 0)) };
             Label title = new Label
             {
-                Text = "Compare " + counter,
+                Text = titleText,
                 ForeColor = Color.Gainsboro,
                 AutoSize = false,
                 AutoEllipsis = true, // trims long titles with "…" to fit
@@ -939,9 +1226,11 @@ namespace MultiLLM
             tabStrip.Controls.Add(chip);
             tabStrip.Controls.SetChildIndex(addBtn, tabStrip.Controls.Count - 1); // keep + last
 
-            Activate(ti);
-            await view.InitAsync(env);
-            view.FocusPrompt();
+            if (activate) Activate(ti);
+            await view.InitAsync(env, saved == null ? null : saved.Urls);
+            if (activate) view.FocusPrompt();
+            SaveSessionIfReady();
+            return ti;
         }
 
         void Activate(TabItem ti)
@@ -954,6 +1243,7 @@ namespace MultiLLM
                 t.Title.ForeColor = on ? Color.White : Color.Gainsboro;
             }
             ti.View.BringToFront();
+            SaveSessionIfReady();
         }
 
         void CloseTab(TabItem ti)
@@ -971,6 +1261,7 @@ namespace MultiLLM
                 int act = Math.Min(idx, tabs.Count - 1);
                 Activate(tabs[act]);
             }
+            SaveSessionIfReady();
         }
 
         // Rename a tab to its first sent message. The label auto-ellipsizes, so
@@ -981,6 +1272,102 @@ namespace MultiLLM
             if (t.Length == 0) return;
             if (t.Length > 80) t = t.Substring(0, 80);
             ti.Title.Text = t;
+            SaveSessionIfReady();
+        }
+
+        void SaveSessionIfReady()
+        {
+            if (restoringSession || env == null) return;
+            SaveSession();
+        }
+
+        void SaveSession()
+        {
+            if (tabs.Count == 0) return;
+
+            try
+            {
+                Directory.CreateDirectory(DataRoot());
+                List<string> lines = new List<string>();
+                lines.Add(SessionHeader);
+                lines.Add("active\t" + ActiveTabIndex());
+
+                foreach (TabItem t in tabs)
+                {
+                    List<string> parts = new List<string>();
+                    parts.Add("tab");
+                    parts.Add(t.View.HasSavedTitle ? "1" : "0");
+                    parts.Add(EncodeField(t.Title.Text));
+                    foreach (string url in t.View.CurrentUrls())
+                        parts.Add(EncodeField(url));
+                    lines.Add(string.Join("\t", parts.ToArray()));
+                }
+
+                File.WriteAllLines(SessionFile(), lines.ToArray(), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        SavedSession LoadSession()
+        {
+            try
+            {
+                string path = SessionFile();
+                if (!File.Exists(path)) return null;
+
+                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                if (lines.Length == 0 || lines[0] != SessionHeader) return null;
+
+                SavedSession session = new SavedSession();
+                for (int i = 1; i < lines.Length; i++)
+                {
+                    if (string.IsNullOrEmpty(lines[i])) continue;
+                    string[] parts = lines[i].Split('\t');
+                    if (parts.Length == 0) continue;
+
+                    if (parts[0] == "active" && parts.Length > 1)
+                    {
+                        int active;
+                        if (int.TryParse(parts[1], out active)) session.ActiveIndex = active;
+                        continue;
+                    }
+
+                    if (parts[0] == "tab" && parts.Length > 2)
+                    {
+                        SavedTab tab = new SavedTab();
+                        tab.HasSavedTitle = parts[1] == "1";
+                        tab.Title = DecodeField(parts[2]);
+
+                        List<string> urls = new List<string>();
+                        for (int j = 3; j < parts.Length; j++)
+                            urls.Add(DecodeField(parts[j]));
+                        tab.Urls = urls.ToArray();
+                        session.Tabs.Add(tab);
+                    }
+                }
+
+                return session.Tabs.Count == 0 ? null : session;
+            }
+            catch { return null; }
+        }
+
+        int ActiveTabIndex()
+        {
+            TabItem active = ActiveTab();
+            int idx = active == null ? -1 : tabs.IndexOf(active);
+            return idx < 0 ? 0 : idx;
+        }
+
+        static string EncodeField(string value)
+        {
+            if (value == null) value = "";
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+        }
+
+        static string DecodeField(string value)
+        {
+            try { return Encoding.UTF8.GetString(Convert.FromBase64String(value)); }
+            catch { return ""; }
         }
 
         // Ctrl+T opens a new tab when focus is on the host UI (prompt box, tab bar).
@@ -1020,6 +1407,11 @@ namespace MultiLLM
             return Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "MultiLLMConsole");
+        }
+
+        static string SessionFile()
+        {
+            return Path.Combine(DataRoot(), "last-session.tsv");
         }
 
         // ONE shared profile for every panel in every tab, so a Google sign-in in
@@ -1117,6 +1509,8 @@ SENDING
 ATTACHING FILES
 • ""Attach to all"" lets you pick one or more files once; they are uploaded to
   every enabled panel at the same time. Then type your prompt and Send to all.
+• Paste an image (Ctrl+V) into the prompt box to attach it to every enabled
+  panel at once — e.g. a screenshot or an image copied from a web page.
 
 PANELS
 • Each panel is a real, logged-in browser for that service.

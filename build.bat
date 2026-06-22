@@ -23,6 +23,12 @@ echo Building LLMChoir.exe ...
   /reference:System.Management.dll ^
   MultiLLM.cs
 
+if errorlevel 1 (
+  echo.
+  echo Build FAILED.
+  exit /b 1
+)
+
 if exist LLMChoir.exe (
   echo.
   echo Build OK -^> LLMChoir.exe
