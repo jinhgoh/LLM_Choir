@@ -185,6 +185,27 @@ namespace MultiLLM
         // Set by MainForm; called when Ctrl+T / Ctrl+W is pressed while a panel has focus.
         public Action OnNewTabRequested;
         public Action OnCloseTabRequested;
+        public Action OnSelectionChanged;
+
+        public Dictionary<string, int> GetSelection()
+        {
+            Dictionary<string, int> selection = new Dictionary<string, int>();
+            foreach (Site site in sites)
+                selection[site.Id] = (site.Enabled.Checked ? 1 : 0) | (site.Show.Checked ? 2 : 0);
+            return selection;
+        }
+
+        public void ApplySelection(Dictionary<string, int> selection)
+        {
+            if (selection == null) return;
+            foreach (Site site in sites)
+            {
+                int flags;
+                if (!selection.TryGetValue(site.Id, out flags)) continue;
+                site.Enabled.Checked = (flags & 1) != 0;
+                site.Show.Checked = (flags & 2) != 0;
+            }
+        }
 
         public ComparisonView()
         {
@@ -415,6 +436,7 @@ namespace MultiLLM
                 site.Enabled.CheckedChanged += delegate
                 {
                     if (captured.Enabled.Checked) captured.Show.Checked = true;
+                    if (OnSelectionChanged != null) OnSelectionChanged();
                 };
                 toggles.Controls.Add(site.Enabled);
 
@@ -432,6 +454,7 @@ namespace MultiLLM
                 {
                     if (!captured.Show.Checked) captured.Enabled.Checked = false;
                     ApplyVisibility();
+                    if (OnSelectionChanged != null) OnSelectionChanged();
                 };
                 showToggles.Controls.Add(site.Show);
 
@@ -1020,6 +1043,7 @@ namespace MultiLLM
         readonly List<TabItem> tabs = new List<TabItem>();
         int counter = 0;
         bool restoringSession;
+        Dictionary<string, int> lastSelection;
         const string SessionHeader = "LLMChoirSession1";
 
         class TabItem
@@ -1039,12 +1063,15 @@ namespace MultiLLM
         class SavedSession
         {
             public int ActiveIndex;
+            public readonly Dictionary<string, int> Selection = new Dictionary<string, int>();
             public readonly List<SavedTab> Tabs = new List<SavedTab>();
         }
 
         public MainForm()
         {
             Text = "LLM Choir";
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            ShowIcon = true;
             // Manual DPI scaling (Dpi.S) is the single source of truth; turn off
             // WinForms' own auto-scaling so the two never compound.
             AutoScaleMode = AutoScaleMode.None;
@@ -1129,6 +1156,7 @@ namespace MultiLLM
         async Task RestoreTabsAsync()
         {
             SavedSession session = LoadSession();
+            if (session != null) lastSelection = session.Selection;
             if (session == null || session.Tabs.Count == 0)
             {
                 await AddTabAsync(null, true);
@@ -1170,6 +1198,12 @@ namespace MultiLLM
             counter++;
 
             ComparisonView view = new ComparisonView { Visible = false };
+            view.ApplySelection(lastSelection);
+            view.OnSelectionChanged = delegate
+            {
+                lastSelection = view.GetSelection();
+                SaveSessionIfReady();
+            };
             content.Controls.Add(view);
             if (saved != null) view.HasSavedTitle = saved.HasSavedTitle;
 
@@ -1291,6 +1325,9 @@ namespace MultiLLM
                 List<string> lines = new List<string>();
                 lines.Add(SessionHeader);
                 lines.Add("active\t" + ActiveTabIndex());
+                if (lastSelection != null)
+                    foreach (KeyValuePair<string, int> selection in lastSelection)
+                        lines.Add("selection\t" + selection.Key + "\t" + selection.Value);
 
                 foreach (TabItem t in tabs)
                 {
@@ -1329,6 +1366,14 @@ namespace MultiLLM
                     {
                         int active;
                         if (int.TryParse(parts[1], out active)) session.ActiveIndex = active;
+                        continue;
+                    }
+
+                    if (parts[0] == "selection" && parts.Length == 3)
+                    {
+                        int flags;
+                        if (int.TryParse(parts[2], out flags) && (flags == 0 || flags == 2 || flags == 3))
+                            session.Selection[parts[1]] = flags;
                         continue;
                     }
 

@@ -13,7 +13,7 @@ if not exist "%CSC%" (
 
 echo Building LLMChoir.exe ...
 "%CSC%" /nologo /target:winexe /platform:x64 /win32manifest:app.manifest ^
-  /out:LLMChoir.exe ^
+  /out:LLMChoir.exe /win32icon:LLMChoir.ico ^
   /reference:Microsoft.Web.WebView2.Core.dll ^
   /reference:Microsoft.Web.WebView2.WinForms.dll ^
   /reference:System.Windows.Forms.dll ^
