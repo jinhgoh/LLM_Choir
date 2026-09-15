@@ -567,15 +567,7 @@ namespace MultiLLM
                     if (!s.Web.IsHandleCreated) s.Web.CreateControl();
                     await s.Web.EnsureCoreWebView2Async(env);
 
-                    // Links/citations that open via target="_blank" or window.open would
-                    // otherwise spawn a bare WebView2 popup; send them to the user's
-                    // actual default browser instead.
-                    s.Web.CoreWebView2.NewWindowRequested += delegate (object sender, CoreWebView2NewWindowRequestedEventArgs e)
-                    {
-                        e.Handled = true;
-                        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri) { UseShellExecute = true }); }
-                        catch { }
-                    };
+                    s.Web.CoreWebView2.NewWindowRequested += OpenBrowserPopup;
 
                     // Bridge Ctrl+T from inside the page (where WebView2 owns the
                     // keyboard) back to the host so it can open a new tab.
@@ -599,6 +591,60 @@ namespace MultiLLM
                 }
                 catch (Exception ex) { s.Status.Text = "init error: " + ex.Message; }
             }
+        }
+
+        // Preserve cookies AND window.opener for OAuth. Opening the URL in an
+        // external browser loses both. Let WebView2 navigate the assigned window;
+        // navigating it ourselves would discard the original popup request.
+        async void OpenBrowserPopup(object sender, CoreWebView2NewWindowRequestedEventArgs e)
+        {
+            CoreWebView2 opener = (CoreWebView2)sender;
+            CoreWebView2Deferral deferral = e.GetDeferral();
+            e.Handled = true;
+            Form popup = null;
+            EventHandler closeWithView = null;
+            try
+            {
+                if (IsDisposed) return;
+                popup = new Form
+                {
+                    Text = "LLM Choir - Browser",
+                    StartPosition = FormStartPosition.CenterParent,
+                    Size = new Size(Dpi.S(620), Dpi.S(780)),
+                    MinimizeBox = false
+                };
+                WebView2 browser = new WebView2 { Dock = DockStyle.Fill };
+                TextBox address = new TextBox { Dock = DockStyle.Top, ReadOnly = true };
+                popup.Controls.Add(browser);
+                popup.Controls.Add(address);
+                closeWithView = delegate { if (!popup.IsDisposed) popup.Close(); };
+                Disposed += closeWithView;
+                popup.FormClosed += delegate { Disposed -= closeWithView; };
+                Form owner = FindForm();
+                if (owner != null) popup.Show(owner);
+                else popup.Show();
+                await browser.EnsureCoreWebView2Async(opener.Environment);
+                if (IsDisposed || popup.IsDisposed) return;
+                browser.CoreWebView2.NewWindowRequested += OpenBrowserPopup;
+                browser.CoreWebView2.SourceChanged += delegate
+                {
+                    if (!address.IsDisposed) address.Text = browser.CoreWebView2.Source;
+                };
+                browser.CoreWebView2.WindowCloseRequested += delegate
+                {
+                    if (!popup.IsDisposed)
+                        popup.BeginInvoke((MethodInvoker)delegate { if (!popup.IsDisposed) popup.Close(); });
+                };
+                e.NewWindow = browser.CoreWebView2;
+            }
+            catch (Exception ex)
+            {
+                if (popup != null && !popup.IsDisposed) popup.Close();
+                if (!IsDisposed)
+                    MessageBox.Show(FindForm(), "Could not open the browser window. Please try again.\n\n" + ex.Message,
+                        "LLM Choir", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally { deferral.Complete(); }
         }
 
         static Uri StartUri(string[] startUrls, int index, string fallback)

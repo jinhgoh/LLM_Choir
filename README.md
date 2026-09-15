@@ -125,6 +125,13 @@ while it waits. If a site stops accepting attachments after a redesign, adjust i
 
 ## Troubleshooting
 
+- **Claude / Google sign-in:** sign-in popups open in an LLM Choir browser
+  window using the same profile as the panels. Complete sign-in there, then
+  return to the Claude panel. Signing in separately in Firefox or Edge does
+  not sign this app in. Links that request a new window also open in an app
+  browser window so popup callbacks and shared sessions keep working.
+  If Google explicitly refuses the embedded browser, use Claude's email
+  sign-in option instead.
 - **Self-healing:** on startup the app automatically clears any of its own
   leftover `msedgewebview2` processes (from a previous crash/kill) that would
   otherwise lock the shared profile, and it won't launch a second clashing
